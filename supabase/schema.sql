@@ -16,6 +16,12 @@ create table if not exists funcionarios (
   ativo boolean not null default true,
   criado_em timestamptz not null default now()
 );
+-- Horário fixo de trabalho de cada funcionário (segunda a sexta)
+alter table funcionarios
+  add column if not exists hora_entrada time,
+  add column if not exists hora_saida time,
+  add column if not exists inicio_almoco time,
+  add column if not exists inicio_cafe time;
 
 -- Turnos de trabalho (ex.: Almoço, Jantar)
 create table if not exists turnos (

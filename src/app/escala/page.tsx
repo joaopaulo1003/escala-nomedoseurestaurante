@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { supabase, variaveisConfiguradas } from "@/lib/supabase";
-import type { Escala, Funcionario, Turno } from "@/lib/tipos";
+import type { Escala, Funcionario, Regra, Turno } from "@/lib/tipos";
+import { RESTAURANTE } from "@/config/restaurante";
+import { cobreTurno, textoHorario } from "@/lib/jornada";
 import {
   DIAS_SEMANA,
   diaMes,
@@ -16,26 +18,35 @@ import {
 } from "@/lib/datas";
 
 type CelulaAberta = { data: string; turno: Turno };
+type Contagem = { funcao: string; escalados: number; minimo: number };
 
 /** Chave de uma célula da grade: "2026-11-20|id-do-turno". */
 function chave(data: string, turnoId: string) {
   return `${data}|${turnoId}`;
 }
 
+function abre(data: string) {
+  return RESTAURANTE.diasFuncionamento.includes(paraData(data).getDay());
+}
+
 export default function EscalaDaSemana() {
   const [segunda, setSegunda] = useState(() => inicioDaSemana(hojeISO()));
   const [turnos, setTurnos] = useState<Turno[]>([]);
   const [funcionarios, setFuncionarios] = useState<Funcionario[]>([]);
+  const [regras, setRegras] = useState<Regra[]>([]);
   const [escalas, setEscalas] = useState<Escala[]>([]);
   const [carregando, setCarregando] = useState(true);
+  const [montando, setMontando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [aberta, setAberta] = useState<CelulaAberta | null>(null);
   const [salvandoId, setSalvandoId] = useState<string | null>(null);
 
   const dias = diasDaSemana(segunda);
+  const diasAbertos = dias.filter(abre);
+  const diasFolga = dias.filter((d) => !abre(d));
   const hoje = hojeISO();
 
-  // Turnos e funcionários: carregados uma vez.
+  // Turnos, funcionários e regras: carregados uma vez.
   useEffect(() => {
     async function carregarBase() {
       if (!variaveisConfiguradas()) {
@@ -44,16 +55,19 @@ export default function EscalaDaSemana() {
         return;
       }
       const db = supabase();
-      const [t, f] = await Promise.all([
+      const [t, f, r] = await Promise.all([
         db.from("turnos").select("id, nome, hora_inicio, hora_fim, ordem").order("ordem"),
-        db.from("funcionarios").select("id, nome, funcao, telefone, cpf, ativo").order("nome"),
+        db.from("funcionarios").select("*").order("nome"),
+        db.from("regras").select("id, dia_semana, turno_id, funcao, minimo"),
       ]);
-      if (t.error || f.error) {
-        setErro("Não foi possível carregar os dados. Detalhe: " + (t.error ?? f.error)!.message);
+      const falha = t.error ?? f.error ?? r.error;
+      if (falha) {
+        setErro("Não foi possível carregar os dados. Detalhe: " + falha.message);
         return;
       }
       setTurnos(t.data as Turno[]);
       setFuncionarios(f.data as Funcionario[]);
+      setRegras(r.data as Regra[]);
     }
     carregarBase();
   }, []);
@@ -77,19 +91,73 @@ export default function EscalaDaSemana() {
     carregarEscalas();
   }, [carregarEscalas]);
 
-  // Agrupa as escalas por célula.
+  const porId = new Map(funcionarios.map((f) => [f.id, f]));
   const porCelula = new Map<string, Escala[]>();
   for (const e of escalas) {
     const k = chave(e.data, e.turno_id);
     porCelula.set(k, [...(porCelula.get(k) ?? []), e]);
   }
-  const porId = new Map(funcionarios.map((f) => [f.id, f]));
 
-  function nomesDaCelula(data: string, turnoId: string): Funcionario[] {
-    return (porCelula.get(chave(data, turnoId)) ?? [])
+  /** Mínimo de uma função no turno e dia (a regra do dia vale mais que a geral). */
+  function minimo(turnoId: string, funcao: string, data: string): number {
+    const dia = paraData(data).getDay();
+    const doTurno = regras.filter((r) => r.turno_id === turnoId && r.funcao === funcao);
+    const doDia = doTurno.find((r) => r.dia_semana === dia);
+    return (doDia ?? doTurno.find((r) => r.dia_semana === null))?.minimo ?? 0;
+  }
+
+  function contagens(data: string, turnoId: string): Contagem[] {
+    const escalados = (porCelula.get(chave(data, turnoId)) ?? [])
       .map((e) => porId.get(e.funcionario_id))
-      .filter((f): f is Funcionario => Boolean(f))
-      .sort((a, b) => a.nome.localeCompare(b.nome));
+      .filter((f): f is Funcionario => Boolean(f));
+    const funcoes = Array.from(
+      new Set([
+        ...RESTAURANTE.funcoes,
+        ...regras.filter((r) => r.turno_id === turnoId).map((r) => r.funcao),
+        ...escalados.map((f) => f.funcao),
+      ]),
+    );
+    return funcoes
+      .map((funcao) => ({
+        funcao,
+        escalados: escalados.filter((f) => f.funcao === funcao).length,
+        minimo: minimo(turnoId, funcao, data),
+      }))
+      .filter((c) => c.minimo > 0 || c.escalados > 0);
+  }
+
+  const celulasAbaixo = diasAbertos.flatMap((d) =>
+    turnos.filter((t) => contagens(d, t.id).some((c) => c.escalados < c.minimo)).map((t) => `${t.nome} de ${rotuloDia(d)}`),
+  );
+
+  async function montarSemana() {
+    const textoSemana = `${diaMes(dias[0])} a ${diaMes(dias[6])}`;
+    const pergunta =
+      escalas.length > 0
+        ? `Substituir a escala de ${textoSemana} pela escala automática? Os ajustes feitos à mão nesta semana serão desfeitos.`
+        : `Montar a escala de ${textoSemana} pelo horário de cada funcionário?`;
+    if (!confirm(pergunta)) return;
+    setMontando(true);
+    setErro(null);
+    const db = supabase();
+    const apagar = await db.from("escalas").delete().gte("data", segunda).lte("data", somarDias(segunda, 6));
+    if (apagar.error) {
+      setErro("Não foi possível limpar a semana. Detalhe: " + apagar.error.message);
+      setMontando(false);
+      return;
+    }
+    const ativos = funcionarios.filter((f) => f.ativo);
+    const novas = diasAbertos.flatMap((data) =>
+      turnos.flatMap((t) =>
+        ativos.filter((f) => cobreTurno(f, t)).map((f) => ({ data, turno_id: t.id, funcionario_id: f.id })),
+      ),
+    );
+    if (novas.length > 0) {
+      const { error } = await db.from("escalas").insert(novas);
+      if (error) setErro("Não foi possível salvar a escala. Detalhe: " + error.message);
+    }
+    await carregarEscalas();
+    setMontando(false);
   }
 
   async function alternar(funcionario: Funcionario) {
@@ -115,19 +183,22 @@ export default function EscalaDaSemana() {
     setSalvandoId(null);
   }
 
-  // Na lista da célula: todos os ativos, mais desativados que já estejam escalados ali.
-  const opcoes = aberta
-    ? funcionarios.filter(
-        (f) =>
-          f.ativo ||
-          (porCelula.get(chave(aberta.data, aberta.turno.id)) ?? []).some(
-            (e) => e.funcionario_id === f.id,
-          ),
-      )
-    : [];
+  // Lista da célula aberta, agrupada por função.
   const escaladosNaAberta = new Set(
     aberta ? (porCelula.get(chave(aberta.data, aberta.turno.id)) ?? []).map((e) => e.funcionario_id) : [],
   );
+  const contagensAberta = aberta ? contagens(aberta.data, aberta.turno.id) : [];
+  const gruposAberta = contagensAberta.map((c) => ({
+    ...c,
+    pessoas: funcionarios
+      .filter((f) => f.funcao === c.funcao && (f.ativo || escaladosNaAberta.has(f.id)))
+      .sort((a, b) => {
+        // Primeiro quem está escalado, depois quem pode, por último quem está fora do horário.
+        const pontos = (f: Funcionario) =>
+          escaladosNaAberta.has(f.id) ? 0 : cobreTurno(f, aberta!.turno) ? 1 : 2;
+        return pontos(a) - pontos(b) || a.nome.localeCompare(b.nome);
+      }),
+  }));
 
   return (
     <div className="space-y-4">
@@ -146,75 +217,114 @@ export default function EscalaDaSemana() {
           </button>
         </div>
         {segunda !== inicioDaSemana(hoje) && (
-          <button className="botao w-full" onClick={() => setSegunda(inicioDaSemana(hoje))}>
+          <button className="botao-secundario w-full" onClick={() => setSegunda(inicioDaSemana(hoje))}>
             Voltar para esta semana
           </button>
         )}
+        <button className="botao w-full" onClick={montarSemana} disabled={montando || turnos.length === 0}>
+          {montando ? "Montando..." : "Montar escala da semana"}
+        </button>
       </div>
 
       {erro && <p className="cartao border-red-300 text-red-700">{erro}</p>}
 
+      {!carregando && turnos.length > 0 && (
+        <div
+          className={`cartao ${celulasAbaixo.length === 0 ? "border-green-300 bg-green-50" : "border-red-300 bg-red-50"}`}
+        >
+          {celulasAbaixo.length === 0 ? (
+            <p className="font-semibold text-green-800">✓ Todos os turnos da semana estão completos.</p>
+          ) : (
+            <>
+              <p className="font-semibold text-red-700">
+                {celulasAbaixo.length} {celulasAbaixo.length === 1 ? "turno está" : "turnos estão"} abaixo do mínimo
+              </p>
+              <p className="mt-1 text-sm text-red-700">
+                {celulasAbaixo.slice(0, 4).join(", ")}
+                {celulasAbaixo.length > 4 && ` e mais ${celulasAbaixo.length - 4}`}
+              </p>
+            </>
+          )}
+        </div>
+      )}
+
       <p className="text-sm text-neutral-600">
-        Toque em um quadro para escolher quem trabalha. Arraste a grade para o lado para ver todos os dias.
+        Toque em um quadro para ver e ajustar quem trabalha. Arraste a grade para o lado para ver todos os dias.
       </p>
 
-      <div className={`overflow-x-auto rounded-2xl border border-neutral-200 bg-white shadow-sm ${carregando ? "opacity-60" : ""}`}>
+      <div
+        className={`overflow-x-auto rounded-2xl border border-neutral-200 bg-white shadow-sm ${carregando ? "opacity-60" : ""}`}
+      >
         <table className="w-full border-collapse text-left">
           <thead>
             <tr>
               <th className="sticky left-0 z-[1] border-b border-r border-neutral-200 bg-white p-2 text-sm">
                 Turno
               </th>
-              {dias.map((d) => (
+              {diasAbertos.map((d) => (
                 <th
                   key={d}
-                  className="min-w-[7.5rem] border-b border-neutral-200 p-2 text-center text-sm"
+                  className="min-w-[8.5rem] border-b border-neutral-200 p-2 text-center text-sm"
                   style={d === hoje ? { color: "var(--cor-destaque)" } : undefined}
                 >
                   {rotuloDia(d)}
                   {d === hoje && <span className="block text-xs">Hoje</span>}
                 </th>
               ))}
+              {diasFolga.map((d) => (
+                <th key={d} className="min-w-[4.5rem] border-b border-neutral-200 p-2 text-center text-sm text-neutral-400">
+                  {rotuloDia(d)}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
-            {turnos.map((t) => (
+            {turnos.map((t, i) => (
               <tr key={t.id}>
-                <th className="sticky left-0 z-[1] border-r border-b border-neutral-200 bg-white p-2 align-top">
-                  <span className="block font-semibold">{t.nome}</span>
+                <th className="sticky left-0 z-[1] border-b border-r border-neutral-200 bg-white p-2 align-top">
+                  <span className="block font-semibold leading-tight">{t.nome}</span>
                   <span className="block text-xs font-normal text-neutral-500">
                     {horaCurta(t.hora_inicio)}–{horaCurta(t.hora_fim)}
                   </span>
                 </th>
-                {dias.map((d) => {
-                  const pessoas = nomesDaCelula(d, t.id);
+                {diasAbertos.map((d) => {
+                  const lista = contagens(d, t.id);
+                  const completo = lista.every((c) => c.escalados >= c.minimo);
+                  const vazio = lista.every((c) => c.escalados === 0);
                   return (
                     <td key={d} className="border-b border-neutral-200 p-1 align-top">
                       <button
-                        className={`flex min-h-[5.5rem] w-full flex-col items-start gap-1 rounded-xl p-2 text-left text-sm active:bg-neutral-100 ${
-                          d === hoje ? "border-2" : "border border-dashed border-neutral-300"
-                        }`}
+                        className={`flex min-h-[5.5rem] w-full flex-col items-stretch gap-0.5 rounded-xl p-2 text-left text-sm active:bg-neutral-100 ${
+                          d === hoje ? "border-2" : "border"
+                        } ${vazio ? "border-dashed border-neutral-300" : completo ? "border-green-400 bg-green-50" : "border-red-300 bg-red-50"}`}
                         style={d === hoje ? { borderColor: "var(--cor-destaque)" } : undefined}
                         onClick={() => setAberta({ data: d, turno: t })}
                       >
-                        {pessoas.length === 0 ? (
-                          <span className="text-neutral-400">+ Escolher</span>
-                        ) : (
-                          <>
-                            {pessoas.map((p) => (
-                              <span key={p.id} className="leading-tight">
-                                {p.nome.split(" ")[0]}
+                        {lista.map((c) => {
+                          const ok = c.escalados >= c.minimo;
+                          return (
+                            <span key={c.funcao} className="flex justify-between gap-2">
+                              <span className="text-neutral-700">{c.funcao}</span>
+                              <span className={`font-semibold ${ok ? "text-green-800" : "text-red-700"}`}>
+                                {c.escalados}/{c.minimo}
                               </span>
-                            ))}
-                            <span className="mt-auto text-xs text-neutral-500">
-                              {pessoas.length} {pessoas.length === 1 ? "pessoa" : "pessoas"}
                             </span>
-                          </>
-                        )}
+                          );
+                        })}
                       </button>
                     </td>
                   );
                 })}
+                {i === 0 &&
+                  diasFolga.map((d) => (
+                    <td
+                      key={d}
+                      rowSpan={turnos.length}
+                      className="border-b border-neutral-200 bg-neutral-50 p-2 text-center align-middle text-sm font-semibold text-neutral-400"
+                    >
+                      Folga
+                    </td>
+                  ))}
               </tr>
             ))}
           </tbody>
@@ -234,42 +344,58 @@ export default function EscalaDaSemana() {
               {aberta.turno.nome} · {DIAS_SEMANA[paraData(aberta.data).getDay()]} {diaMes(aberta.data)}
             </h2>
             <p className="mb-3 text-sm text-neutral-600">
-              Toque para marcar ou desmarcar. Salva na hora.
+              Toque para marcar ou desmarcar. Salva na hora. Só dá para escalar quem está no horário do turno
+              inteiro, fora das pausas.
             </p>
-            <ul className="space-y-2">
-              {opcoes.map((f) => {
-                const marcado = escaladosNaAberta.has(f.id);
-                return (
-                  <li key={f.id}>
-                    <button
-                      className={`flex w-full items-center gap-3 rounded-xl border p-3 text-left ${
-                        marcado ? "border-transparent text-white" : "border-neutral-300 bg-white"
-                      }`}
-                      style={marcado ? { background: "var(--cor-principal)" } : undefined}
-                      onClick={() => alternar(f)}
-                      disabled={salvandoId !== null}
-                    >
-                      <span
-                        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md border-2 text-lg font-bold ${
-                          marcado ? "border-white" : "border-neutral-400"
-                        }`}
-                      >
-                        {marcado ? "✓" : ""}
-                      </span>
-                      <span className="flex-1">
-                        <span className="block font-semibold">{f.nome}</span>
-                        <span className={`block text-sm ${marcado ? "text-white/80" : "text-neutral-600"}`}>
-                          {f.funcao}
-                          {!f.ativo && " · desativado"}
-                        </span>
-                      </span>
-                      {salvandoId === f.id && <span className="text-sm">Salvando...</span>}
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-            <button className="botao mt-4 w-full" onClick={() => setAberta(null)}>
+            {gruposAberta.map((g) => (
+              <section key={g.funcao} className="mb-4">
+                <h3
+                  className={`sticky top-0 z-[1] -mx-1 mb-2 rounded-lg bg-white px-1 py-1 font-semibold ${
+                    g.escalados >= g.minimo ? "text-green-800" : "text-red-700"
+                  }`}
+                >
+                  {g.funcao}: {g.escalados} de {g.minimo}
+                  {g.escalados >= g.minimo ? " ✓" : ` (faltam ${g.minimo - g.escalados})`}
+                </h3>
+                <ul className="space-y-2">
+                  {g.pessoas.map((f) => {
+                    const marcado = escaladosNaAberta.has(f.id);
+                    const pode = cobreTurno(f, aberta.turno);
+                    return (
+                      <li key={f.id}>
+                        <button
+                          className={`flex w-full items-center gap-3 rounded-xl border p-3 text-left disabled:opacity-50 ${
+                            marcado ? "border-transparent text-white" : "border-neutral-300 bg-white"
+                          }`}
+                          style={marcado ? { background: "var(--cor-principal)" } : undefined}
+                          onClick={() => alternar(f)}
+                          disabled={salvandoId !== null || (!marcado && !pode)}
+                        >
+                          <span
+                            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md border-2 text-lg font-bold ${
+                              marcado ? "border-white" : "border-neutral-400"
+                            }`}
+                          >
+                            {marcado ? "✓" : ""}
+                          </span>
+                          <span className="flex-1">
+                            <span className="block font-semibold">{f.nome}</span>
+                            <span className={`block text-sm ${marcado ? "text-white/80" : "text-neutral-600"}`}>
+                              {textoHorario(f) ?? "Sem horário"}
+                              {!pode && " · fora do horário"}
+                              {!f.ativo && " · desativado"}
+                            </span>
+                          </span>
+                          {salvandoId === f.id && <span className="text-sm">Salvando...</span>}
+                        </button>
+                      </li>
+                    );
+                  })}
+                  {g.pessoas.length === 0 && <li className="text-sm text-neutral-500">Ninguém nesta função.</li>}
+                </ul>
+              </section>
+            ))}
+            <button className="botao sticky bottom-0 mt-2 w-full" onClick={() => setAberta(null)}>
               Pronto
             </button>
           </div>

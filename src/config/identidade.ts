@@ -3,7 +3,7 @@
 // public/logo.png (ou deixe logo como null para mostrar só o nome).
 
 export const identidade = {
-  nome: "Aneto Food Service",
+  nome: "Aneto · Unidade Mooca",
   // Cor dos botões e do cabeçalho (formato #RRGGBB)
   corPrincipal: "#39824C",
   // Cor de fundo das páginas

@@ -7,6 +7,11 @@ export type Funcionario = {
   telefone: string | null;
   cpf: string | null;
   ativo: boolean;
+  // Horário fixo de trabalho (segunda a sexta). Formato "06:00:00".
+  hora_entrada: string | null;
+  hora_saida: string | null;
+  inicio_almoco: string | null; // 1 hora
+  inicio_cafe: string | null; // 10 minutos
 };
 
 export type Turno = {
@@ -38,8 +43,10 @@ export type Configuracao = {
 };
 
 export const FUNCOES_PADRAO = [
-  "Salão",
   "Cozinha",
+  "Reposição",
+  "Atendimento",
+  "Salão",
   "Caixa",
   "Bar",
   "Entregador",
