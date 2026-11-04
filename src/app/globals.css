@@ -2,8 +2,9 @@
 
 /* Cores vêm de src/config/identidade.ts e são aplicadas no layout. */
 :root {
-  --cor-principal: #1f3a5f;
-  --cor-secundaria: #f4f1ea;
+  --cor-principal: #39824c;
+  --cor-secundaria: #f5f7f2;
+  --cor-destaque: #db404c;
   --cor-texto: #1a1a1a;
 }
 

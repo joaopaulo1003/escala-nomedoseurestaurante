@@ -168,11 +168,11 @@ export default function EscalaDaSemana() {
               {dias.map((d) => (
                 <th
                   key={d}
-                  className={`min-w-[7.5rem] border-b border-neutral-200 p-2 text-center text-sm ${
-                    d === hoje ? "bg-amber-50" : ""
-                  }`}
+                  className="min-w-[7.5rem] border-b border-neutral-200 p-2 text-center text-sm"
+                  style={d === hoje ? { color: "var(--cor-destaque)" } : undefined}
                 >
                   {rotuloDia(d)}
+                  {d === hoje && <span className="block text-xs">Hoje</span>}
                 </th>
               ))}
             </tr>
@@ -189,9 +189,12 @@ export default function EscalaDaSemana() {
                 {dias.map((d) => {
                   const pessoas = nomesDaCelula(d, t.id);
                   return (
-                    <td key={d} className={`border-b border-neutral-200 p-1 align-top ${d === hoje ? "bg-amber-50" : ""}`}>
+                    <td key={d} className="border-b border-neutral-200 p-1 align-top">
                       <button
-                        className="flex min-h-[5.5rem] w-full flex-col items-start gap-1 rounded-xl border border-dashed border-neutral-300 p-2 text-left text-sm active:bg-neutral-100"
+                        className={`flex min-h-[5.5rem] w-full flex-col items-start gap-1 rounded-xl p-2 text-left text-sm active:bg-neutral-100 ${
+                          d === hoje ? "border-2" : "border border-dashed border-neutral-300"
+                        }`}
+                        style={d === hoje ? { borderColor: "var(--cor-destaque)" } : undefined}
                         onClick={() => setAberta({ data: d, turno: t })}
                       >
                         {pessoas.length === 0 ? (

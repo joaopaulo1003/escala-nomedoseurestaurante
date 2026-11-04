@@ -3,11 +3,13 @@
 // public/logo.png (ou deixe logo como null para mostrar só o nome).
 
 export const identidade = {
-  nome: "Meu Restaurante",
+  nome: "Aneto Food Service",
   // Cor dos botões e do cabeçalho (formato #RRGGBB)
-  corPrincipal: "#1F3A5F",
+  corPrincipal: "#39824C",
   // Cor de fundo das páginas
-  corSecundaria: "#F4F1EA",
+  corSecundaria: "#F5F7F2",
   // Caminho do logo dentro da pasta public, ou null
-  logo: null as string | null,
+  logo: "/logo.png" as string | null,
+  // Cor de destaque (ex.: o dia de hoje na escala)
+  corDestaque: "#DB404C",
 };
